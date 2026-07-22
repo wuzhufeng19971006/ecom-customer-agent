@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Data
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs & temp
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+
+# AI tools
+.claude/
+.cursor/
+.trae/
+
+# OS
+.DS_Store
+Thumbs.db
