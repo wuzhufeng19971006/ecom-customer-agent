@@ -2,9 +2,9 @@
 
 import pytest
 
-from app.agent_runtime.tools.executor import ToolExecutor, ToolExecutionResult
-from app.agent_runtime.tools.tool_registry import ToolRegistry, get_default_registry
-from app.llm.base import ToolSpec
+from tool_center.manager.tool_executor import ToolExecutor, ToolExecutionResult
+from tool_center.registry.tool_registry import ToolRegistry, get_default_registry
+from runtime.llm.llm_provider import ToolSpec
 
 
 def _make_spec(name: str = "echo", desc: str = "echo tool") -> ToolSpec:

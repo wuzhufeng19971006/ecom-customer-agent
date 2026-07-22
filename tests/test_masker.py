@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.agent_runtime.security.masker import MaskResult, Masker
+from security.data_mask.masker import MaskResult, Masker
 
 
 def test_mask_phone():

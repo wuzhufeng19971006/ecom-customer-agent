@@ -7,25 +7,25 @@ import pytest
 
 
 def test_imports_multimodal():
-    import app.llm.base  # noqa: F401
-    import app.llm.mimo  # noqa: F401
-    import app.llm.deepseek  # noqa: F401
-    import app.llm.embedding_dashscope  # noqa: F401
-    import app.llm.rerank_jina  # noqa: F401
-    import app.multimodal.vision_service  # noqa: F401
-    import app.multimodal.ocr_service  # noqa: F401
-    import app.multimodal.image_analyzer  # noqa: F401
-    import app.conversation.state  # noqa: F401
-    import app.conversation.event  # noqa: F401
-    import app.conversation.decision  # noqa: F401
-    import app.conversation.manager  # noqa: F401
-    import app.agent.query_rewrite  # noqa: F401
-    import app.agent.qa  # noqa: F401
-    import app.api.qa_multimodal  # noqa: F401
+    import runtime.llm.llm_provider  # noqa: F401
+    import runtime.llm.providers.mimo  # noqa: F401
+    import runtime.llm.providers.deepseek  # noqa: F401
+    import runtime.llm.providers.embedding_dashscope  # noqa: F401
+    import runtime.llm.providers.rerank_jina  # noqa: F401
+    import runtime.multimodal.vision_service  # noqa: F401
+    import runtime.multimodal.ocr_service  # noqa: F401
+    import runtime.multimodal.image_analyzer  # noqa: F401
+    import runtime.conversation.state  # noqa: F401
+    import runtime.conversation.event  # noqa: F401
+    import runtime.decision.decision_engine  # noqa: F401
+    import runtime.conversation.session_manager  # noqa: F401
+    import apps.customer_service_agent.agent.query_rewrite  # noqa: F401
+    import apps.customer_service_agent.agent.qa  # noqa: F401
+    import apps.customer_service_agent.api.qa_multimodal  # noqa: F401
 
 
 def test_settings_multimodal():
-    from app.core.config import settings
+    from common.config.config import settings
 
     assert settings.mimo_model == "mimo-v2.5"
     assert settings.mimo_api_base.endswith("/v1")
@@ -34,7 +34,7 @@ def test_settings_multimodal():
 
 
 def test_message_supports_image():
-    from app.llm.base import ImagePart, Message, TextPart
+    from runtime.llm.llm_provider import ImagePart, Message, TextPart
 
     # 纯文本消息
     m1 = Message(role="user", content="hi")
@@ -49,7 +49,7 @@ def test_message_supports_image():
 
 
 def test_conversation_state():
-    from app.conversation.state import (
+    from runtime.conversation.state import (
         ConversationState,
         ConversationStatus,
         ExtractedContext,
@@ -83,7 +83,7 @@ def test_conversation_state():
 def test_event_bus():
     import asyncio
 
-    from app.conversation.event import Event, EventBus, EventType
+    from runtime.conversation.event import Event, EventBus, EventType
 
     bus = EventBus()
     received = []
@@ -104,8 +104,8 @@ def test_event_bus():
 def test_decision_engine():
     from datetime import datetime, timedelta, timezone
 
-    from app.conversation.decision import Decision, DecisionEngine
-    from app.conversation.state import (
+    from runtime.decision.decision_engine import Decision, DecisionEngine
+    from runtime.conversation.state import (
         ConversationState,
         ConversationStatus,
         ExtractedContext,
@@ -147,9 +147,8 @@ def test_decision_engine():
 
 
 def test_ocr_filter():
-    from app.llm.base import ImagePart
-    from app.multimodal.ocr_service import OCRResult, filter_ocr_text
-    from app.multimodal.vision_service import VisionContext
+    from runtime.multimodal.ocr_service import OCRResult, filter_ocr_text
+    from runtime.multimodal.vision_service import VisionContext
 
     ocr = OCRResult(
         full_text=["首页", "我的订单", "订单号: 12345", "退出登录"],
@@ -175,7 +174,7 @@ def test_ocr_filter():
 
 
 def test_vision_context_prompt_block():
-    from app.multimodal.vision_service import VisionContext
+    from runtime.multimodal.vision_service import VisionContext
 
     ctx = VisionContext(
         page_type="order_detail",
@@ -191,7 +190,7 @@ def test_vision_context_prompt_block():
 
 
 def test_query_rewrite_fallback():
-    from app.agent.query_rewrite import QueryRewriteService
+    from apps.customer_service_agent.agent.query_rewrite import QueryRewriteService
 
     svc = QueryRewriteService.__new__(QueryRewriteService)
     q = svc._fallback("为什么没显示", ["订单号", "支付金额", "首页"])
@@ -202,7 +201,7 @@ def test_query_rewrite_fallback():
 
 
 def test_app_routes_registered():
-    from app.main import create_app
+    from apps.customer_service_agent.main import create_app
 
     app = create_app()
     schema = app.openapi()

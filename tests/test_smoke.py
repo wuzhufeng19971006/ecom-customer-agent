@@ -1,20 +1,20 @@
-"""冒烟测试：验证模块可正常导入、配置可加载。"""
+"""冒烟测试：验证新架构模块可正常导入、配置可加载。"""
 
 import pytest
 
 
 def test_imports():
-    import app  # noqa: F401
-    import app.main  # noqa: F401
-    import app.core.config  # noqa: F401
-    import app.llm.base  # noqa: F401
-    import app.adapters.base  # noqa: F401
-    import app.agent.loop  # noqa: F401
-    import app.models.database  # noqa: F401
+    import apps.customer_service_agent  # noqa: F401
+    import apps.customer_service_agent.main  # noqa: F401
+    import common.config.config  # noqa: F401
+    import runtime.llm.llm_provider  # noqa: F401
+    import apps.customer_service_agent.adapters.base  # noqa: F401
+    import apps.customer_service_agent.agent.loop  # noqa: F401
+    import common.database.database  # noqa: F401
 
 
 def test_settings_loaded():
-    from app.core.config import settings
+    from common.config.config import settings
 
     assert settings.deepseek_model == "deepseek-chat"
     assert settings.dashscope_embedding_model.startswith("text-embedding")
@@ -22,7 +22,7 @@ def test_settings_loaded():
 
 
 def test_app_factory():
-    from app.main import create_app
+    from apps.customer_service_agent.main import create_app
 
     app = create_app()
     assert app.title == "ecom-customer-agent"
@@ -30,6 +30,14 @@ def test_app_factory():
 
 @pytest.mark.asyncio
 async def test_chroma_collections():
-    from app.retrieval.chroma_store import COLLECTIONS
+    from knowledge_platform.knowledge_service.retriever.retriever import COLLECTIONS
 
     assert set(COLLECTIONS) == {"kb_faq", "kb_product", "kb_policy"}
+
+
+def test_legacy_app_compat():
+    """旧 app.* 兼容层仍可导入（迁移过渡期）。"""
+    from app.main import create_app
+
+    app = create_app()
+    assert app.title == "ecom-customer-agent"

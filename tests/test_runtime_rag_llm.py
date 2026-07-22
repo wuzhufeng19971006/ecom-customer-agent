@@ -1,10 +1,10 @@
-"""测试 RAG / LLM 模块迁移到 agent_runtime 后的导入与兼容性。"""
+"""测试 RAG / LLM 模块迁移到新架构后的导入与兼容性。"""
 
 import pytest
 
 
 def test_import_rag_retriever():
-    from app.agent_runtime.rag.retriever import (
+    from knowledge_platform.knowledge_service.retriever.retriever import (
         ChromaStore,
         RetrievalHit,
         get_store,
@@ -18,7 +18,7 @@ def test_import_rag_retriever():
 
 
 def test_import_query_rewriter():
-    from app.agent_runtime.rag.query_rewriter import (
+    from knowledge_platform.knowledge_service.query_rewriter.query_rewriter import (
         ContextBuilder,
         QueryRewriteService,
     )
@@ -29,7 +29,7 @@ def test_import_query_rewriter():
 
 
 def test_import_llm_provider():
-    from app.agent_runtime.llm.provider import (
+    from runtime.llm.model_router import (
         LLMProvider,
         VLMProvider,
         EmbeddingProvider,
@@ -51,14 +51,14 @@ def test_import_llm_provider():
 
 
 def test_compatibility_chroma_store():
-    # 旧路径仍可用，且指向新模块的同一对象
+    # 旧 app 路径仍可用，且指向新模块的同一对象
     from app.retrieval.chroma_store import (
         ChromaStore,
         RetrievalHit,
         get_store,
         COLLECTIONS,
     )
-    from app.agent_runtime.rag.retriever import (
+    from knowledge_platform.knowledge_service.retriever.retriever import (
         ChromaStore as NewChromaStore,
         RetrievalHit as NewRetrievalHit,
         get_store as NewGetStore,
@@ -72,7 +72,18 @@ def test_compatibility_chroma_store():
 
 
 def test_compatibility_query_rewrite():
-    from app.agent.query_rewrite import QueryRewriteService
-    from app.agent_runtime.conversation.context_builder import ContextBuilder
+    from apps.customer_service_agent.agent.query_rewrite import QueryRewriteService
+    from runtime.conversation.context_builder import ContextBuilder
 
     assert QueryRewriteService is ContextBuilder
+
+
+def test_legacy_agent_runtime_compat():
+    """旧 app.agent_runtime.* 兼容层仍可导入。"""
+    from app.agent_runtime.rag.retriever import COLLECTIONS
+    from app.agent_runtime.llm.provider import LLMProvider
+    from app.agent_runtime.security.masker import Masker
+
+    assert set(COLLECTIONS) == {"kb_faq", "kb_product", "kb_policy"}
+    assert LLMProvider is not None
+    assert Masker is not None
