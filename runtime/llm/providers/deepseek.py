@@ -1,8 +1,9 @@
 """DeepSeek V4 Flash LLM 实现。
 
 走 OpenAI 兼容协议：POST {base}/chat/completions
-- 模型名：deepseek-chat（V4 Flash 通过该入口承载，遵循官方迁移文档）
+- 模型名：deepseek-v4-flash（旧 deepseek-chat 已于 2026-07-24 停用，遵循官方迁移文档）
 - 支持 tools / tool_choice，符合 function-calling 规范
+- 支持 response_format json_object，用于结构化输出
 """
 
 from __future__ import annotations

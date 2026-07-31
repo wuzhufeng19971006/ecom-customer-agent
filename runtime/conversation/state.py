@@ -48,7 +48,7 @@ class ExtractedContext:
 @dataclass
 class ConversationState:
     session_id: str
-    platform: str = "taobao"
+    platform: str = "doudian"
     buyer_id: str = ""
     shop_id: str = ""
     messages: list[MessageItem] = field(default_factory=list)

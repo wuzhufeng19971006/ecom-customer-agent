@@ -16,7 +16,7 @@ def test_imports():
 def test_settings_loaded():
     from common.config.config import settings
 
-    assert settings.deepseek_model == "deepseek-chat"
+    assert settings.deepseek_model == "deepseek-v4-flash"
     assert settings.dashscope_embedding_model.startswith("text-embedding")
     assert settings.jina_reranker_model.startswith("jina-reranker")
 
@@ -36,8 +36,8 @@ async def test_chroma_collections():
 
 
 def test_legacy_app_compat():
-    """旧 app.* 兼容层仍可导入（迁移过渡期）。"""
-    from app.main import create_app
+    """app.* 兼容层已移除，直接验证 apps 路径可用。"""
+    from apps.customer_service_agent.main import create_app
 
     app = create_app()
     assert app.title == "ecom-customer-agent"

@@ -51,24 +51,18 @@ def test_import_llm_provider():
 
 
 def test_compatibility_chroma_store():
-    # 旧 app 路径仍可用，且指向新模块的同一对象
-    from app.retrieval.chroma_store import (
+    # 验证 retriever 模块导出完整
+    from knowledge_platform.knowledge_service.retriever.retriever import (
         ChromaStore,
         RetrievalHit,
         get_store,
         COLLECTIONS,
     )
-    from knowledge_platform.knowledge_service.retriever.retriever import (
-        ChromaStore as NewChromaStore,
-        RetrievalHit as NewRetrievalHit,
-        get_store as NewGetStore,
-        COLLECTIONS as NewCollections,
-    )
 
-    assert ChromaStore is NewChromaStore
-    assert RetrievalHit is NewRetrievalHit
-    assert get_store is NewGetStore
-    assert COLLECTIONS is NewCollections
+    assert ChromaStore is not None
+    assert RetrievalHit is not None
+    assert callable(get_store)
+    assert set(COLLECTIONS) == {"kb_faq", "kb_product", "kb_policy"}
 
 
 def test_compatibility_query_rewrite():
@@ -79,10 +73,10 @@ def test_compatibility_query_rewrite():
 
 
 def test_legacy_agent_runtime_compat():
-    """旧 app.agent_runtime.* 兼容层仍可导入。"""
-    from app.agent_runtime.rag.retriever import COLLECTIONS
-    from app.agent_runtime.llm.provider import LLMProvider
-    from app.agent_runtime.security.masker import Masker
+    """app.agent_runtime.* 兼容层已移除，验证实际模块路径可导入。"""
+    from knowledge_platform.knowledge_service.retriever.retriever import COLLECTIONS
+    from runtime.llm.model_router import LLMProvider
+    from security.data_mask.masker import Masker
 
     assert set(COLLECTIONS) == {"kb_faq", "kb_product", "kb_policy"}
     assert LLMProvider is not None

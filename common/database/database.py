@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from common.config.config import settings
@@ -67,6 +67,56 @@ class HandoffTask(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+class BatchTestTask(Base):
+    """批量测试任务表。"""
+
+    __tablename__ = "batch_test_tasks"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    filename: Mapped[str] = mapped_column(String(256))
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    completed: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    items: Mapped[list["BatchTestItem"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+
+class BatchTestItem(Base):
+    """批量测试条目表：每条问题及其测试结果。"""
+
+    __tablename__ = "batch_test_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("batch_test_tasks.id"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, default=0)  # 行号
+    question: Mapped[str] = mapped_column(Text)
+    expected_answer: Mapped[str | None] = mapped_column(Text, default=None)
+    category: Mapped[str | None] = mapped_column(String(64), default=None)
+    # 测试结果
+    actual_answer: Mapped[str | None] = mapped_column(Text, default=None)
+    matched: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    sources_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    sources_text: Mapped[str | None] = mapped_column(Text, default=None)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, default=None)
+    test_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|done|error
+    error_msg: Mapped[str | None] = mapped_column(Text, default=None)
+    # 人工审核
+    review_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|correct|incorrect
+    review_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    task: Mapped[BatchTestTask] = relationship(back_populates="items")
 
 
 async def init_db() -> None:

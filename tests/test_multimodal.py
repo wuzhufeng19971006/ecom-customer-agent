@@ -206,7 +206,7 @@ def test_app_routes_registered():
     app = create_app()
     schema = app.openapi()
     paths = set(schema.get("paths", {}).keys())
-    # 多模态与文本答疑 + 淘宝 webhook 必须注册
+    # 多模态与文本答疑 + 抖店 webhook 必须注册
     assert "/api/qa" in paths
     assert "/api/qa/multimodal" in paths
-    assert "/webhooks/taobao" in paths
+    assert "/webhooks/doudian" in paths

@@ -64,7 +64,9 @@ class JinaReranker(RerankProvider):
             RerankResult(
                 index=item["index"],
                 score=item["relevance_score"],
-                document=item.get("document", {}).get("text", ""),
+                document=item.get("document", "")
+                if isinstance(item.get("document"), str)
+                else item.get("document", {}).get("text", ""),
             )
             for item in data.get("results", [])
         ]

@@ -24,9 +24,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from runtime.conversation.context_builder import ContextBuilder
 from runtime.decision.decision_engine import Decision, DecisionEngine
 from runtime.conversation.event import EventBus, Event, EventType, get_event_bus
 from runtime.conversation.state import (
@@ -40,28 +39,7 @@ from common.logger.logger import get_logger
 from runtime.llm.llm_provider import ImagePart
 from runtime.multimodal.image_analyzer import ImageAnalyzer
 
-# QAService 将在 apps.customer_service_agent.agent.qa 中实现
-# 此处用 TYPE_CHECKING 避免运行时循环依赖
-if TYPE_CHECKING:
-    from apps.customer_service_agent.agent.qa import QAService
-
 log = get_logger(__name__)
-
-
-def _get_qa_service() -> "QAService":
-    """延迟导入 QAService，避免运行时循环依赖。
-
-    QAService 尚未迁移到 apps.customer_service_agent.agent.qa，
-    此处运行时尝试导入，若失败则抛出可读异常。
-    """
-    try:
-        from apps.customer_service_agent.agent.qa import QAService
-        return QAService()
-    except ImportError as e:
-        raise ImportError(
-            "QAService 未在 apps.customer_service_agent.agent.qa 中实现，"
-            "请先迁移该模块或显式传入 qa_service 参数。"
-        ) from e
 
 
 class ConversationManager:
@@ -71,16 +49,15 @@ class ConversationManager:
         self,
         *,
         image_analyzer: ImageAnalyzer | None = None,
-        qa_service: "QAService | None" = None,
-        query_rewrite: ContextBuilder | None = None,
         decision_engine: DecisionEngine | None = None,
         event_bus: EventBus | None = None,
         debounce_ms: int | None = None,
     ) -> None:
+        from apps.customer_service_agent.agent.answer_engine import get_answer_engine
+
         self.image_analyzer = image_analyzer or ImageAnalyzer()
-        # qa_service 默认 None：运行时延迟导入，避免模块加载阶段循环依赖
-        self.qa = qa_service if qa_service is not None else _get_qa_service()
-        self.query_rewrite = query_rewrite or ContextBuilder()
+        # 统一走 AnswerEngine，与 Webhook 路径共享脱敏/RAG/LLM/解析逻辑
+        self.engine = get_answer_engine()
         self.decision = decision_engine or DecisionEngine()
         self.bus = event_bus or get_event_bus()
         self.debounce_ms = debounce_ms or settings.conversation_debounce_ms
@@ -94,7 +71,7 @@ class ConversationManager:
         self,
         session_id: str | None = None,
         *,
-        platform: str = "taobao",
+        platform: str = "doudian",
         buyer_id: str = "",
         shop_id: str = "",
     ) -> ConversationState:
@@ -253,33 +230,30 @@ class ConversationManager:
         has_image = state.has_image()
 
         try:
+            # 统一走 AnswerEngine（脱敏/RAG/LLM/解析行为与 Webhook 路径一致）
             if has_image:
-                # 多模态：走 query rewrite 融合 context，再走 RAG
-                rewritten = await self.query_rewrite.rewrite(
-                    user_text=user_text,
+                # 多模态：query rewrite 融合 vision/ocr 上下文，再走 QA
+                result = await self.engine.answer_multimodal(
+                    user_text,
                     vision_summary=state.extracted_context.vision_summary,
                     ocr_filtered=state.extracted_context.ocr_filtered,
                     possible_intents=state.extracted_context.possible_intent,
                 )
-                log.info(
-                    "conversation.rewritten_query",
-                    session_id=session_id,
-                    original=user_text[:80],
-                    rewritten=rewritten[:80],
-                )
-                result = await self.qa.answer(rewritten)
             else:
-                # 纯文本：直接走 RAG
-                result = await self.qa.answer(user_text)
+                # 纯文本：直接走 QA
+                result = await self.engine.answer_qa(user_text)
 
-            if best_effort and not result.matched:
+            answer = result.answer
+            matched = result.matched
+
+            if best_effort and not matched:
                 # 超时兜底：加上引导语
-                result.answer = (
-                    f"{result.answer}\n\n如需进一步帮助，请提供更多信息或联系人工客服。"
+                answer = (
+                    f"{answer}\n\n如需进一步帮助，请提供更多信息或联系人工客服。"
                 )
 
             # 记录到会话
-            state.messages.append(MessageItem(role="assistant", text=result.answer))
+            state.messages.append(MessageItem(role="assistant", text=answer))
             state.status = ConversationStatus.ANSWERED
             state.touch()
 
@@ -287,10 +261,10 @@ class ConversationManager:
                 Event(
                     type=EventType.ANSWER_READY,
                     session_id=session_id,
-                    payload={"answer": result.answer, "matched": result.matched},
+                    payload={"answer": answer, "matched": matched},
                 )
             )
-            return result.answer
+            return answer
 
         except Exception as e:  # noqa: BLE001
             log.error("conversation.generate_failed", session_id=session_id, error=str(e))

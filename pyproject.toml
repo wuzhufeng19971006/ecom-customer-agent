@@ -16,6 +16,7 @@ dependencies = [
     "tenacity>=8.3",
     "python-dotenv>=1.0",
     "structlog>=24.1",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -33,15 +34,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
-    "app*",
     "apps*",
     "runtime*",
     "tool_center*",
     "knowledge_platform*",
-    "mcp_services*",
     "security*",
     "common*",
-    "platform_infra*",
 ]
 
 [tool.ruff]

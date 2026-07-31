@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # DeepSeek (RAG 生成 LLM)
     deepseek_api_base: str = Field(default="https://api.deepseek.com")
     deepseek_api_key: str = Field(default="")
-    deepseek_model: str = Field(default="deepseek-chat")
+    deepseek_model: str = Field(default="deepseek-v4-flash")
 
     # 小米 MiMo-V2.5 (Vision LLM，多模态)
     mimo_api_base: str = Field(default="https://api.xiaomimimo.com/v1")
@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     taobao_session_key: str = Field(default="")
     taobao_webhook_secret: str = Field(default="")
     taobao_api_base: str = Field(default="https://eco.taobao.com")
+
+    # 抖店（抖音电商）
+    doudian_app_key: str = Field(default="")
+    doudian_app_secret: str = Field(default="")
+    doudian_shop_id: str = Field(default="")
+    doudian_access_token: str = Field(default="")
+    doudian_webhook_secret: str = Field(default="")
+    doudian_api_base: str = Field(default="https://openapi-fxg.jinritemai.com")
 
     # 数据
     database_url: str = Field(default="sqlite+aiosqlite:///./data/app.db")

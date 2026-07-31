@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from apps.customer_service_agent.adapters.base import PlatformAdapter
 from runtime.llm.llm_provider import ToolSpec
+from tool_center.manager.tool_executor import ToolExecutor
 
 # ===== 工具规格（暴露给 LLM） =====
 
@@ -17,7 +18,7 @@ QUERY_ORDER = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "order_id": {"type": "string", "description": "淘宝订单号"},
+            "order_id": {"type": "string", "description": "抖店订单号"},
         },
         "required": ["order_id"],
     },
@@ -29,7 +30,7 @@ QUERY_LOGISTICS = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "order_id": {"type": "string", "description": "淘宝订单号"},
+            "order_id": {"type": "string", "description": "抖店订单号"},
         },
         "required": ["order_id"],
     },
@@ -41,7 +42,7 @@ QUERY_PRODUCT = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "sku_id": {"type": "string", "description": "淘宝商品 SKU ID"},
+            "sku_id": {"type": "string", "description": "抖店商品 ID"},
         },
         "required": ["sku_id"],
     },
@@ -62,22 +63,67 @@ HANDOFF_HUMAN = ToolSpec(
 ALL_TOOLS = [QUERY_ORDER, QUERY_LOGISTICS, QUERY_PRODUCT, HANDOFF_HUMAN]
 
 
+async def _query_order_handler(adapter: PlatformAdapter, order_id: str) -> str:
+    order = await adapter.query_order(order_id)
+    return str(order.__dict__) if order else "未找到该订单"
+
+
+async def _query_logistics_handler(adapter: PlatformAdapter, order_id: str) -> str:
+    info = await adapter.query_logistics(order_id)
+    return str(info.__dict__) if info else "未找到物流信息"
+
+
+async def _query_product_handler(adapter: PlatformAdapter, sku_id: str) -> str:
+    prod = await adapter.query_product(sku_id)
+    return str(prod.__dict__) if prod else "未找到商品"
+
+
+async def _handoff_human_handler(reason: str = "未指定") -> str:
+    return f"已发起转人工，原因：{reason}"
+
+
 async def execute_tool(
     name: str,
     args: dict,
     *,
     adapter: PlatformAdapter,
 ) -> str:
-    """执行工具，返回给 LLM 的字符串结果。"""
+    """执行工具，返回给 LLM 的字符串结果。
+
+    保留向后兼容：旧代码仍可直接调用此函数。
+    新代码应优先使用 create_tool_executor() + ToolExecutor.execute()。
+    """
     if name == "query_order":
-        order = await adapter.query_order(args["order_id"])
-        return str(order.__dict__) if order else "未找到该订单"
+        return await _query_order_handler(adapter, **args)
     if name == "query_logistics":
-        info = await adapter.query_logistics(args["order_id"])
-        return str(info.__dict__) if info else "未找到物流信息"
+        return await _query_logistics_handler(adapter, **args)
     if name == "query_product":
-        prod = await adapter.query_product(args["sku_id"])
-        return str(prod.__dict__) if prod else "未找到商品"
+        return await _query_product_handler(adapter, **args)
     if name == "handoff_human":
-        return f"已发起转人工，原因：{args.get('reason', '未指定')}"
+        return await _handoff_human_handler(**args)
     return f"unknown tool: {name}"
+
+
+def create_tool_executor(adapter: PlatformAdapter) -> ToolExecutor:
+    """创建已注册所有 handler 的 ToolExecutor 实例。
+
+    handler 通过闭包绑定 adapter，调用时只需传 arguments。
+    """
+    executor = ToolExecutor()
+    executor.register_handler(
+        "query_order",
+        lambda **kw: _query_order_handler(adapter, **kw),
+    )
+    executor.register_handler(
+        "query_logistics",
+        lambda **kw: _query_logistics_handler(adapter, **kw),
+    )
+    executor.register_handler(
+        "query_product",
+        lambda **kw: _query_product_handler(adapter, **kw),
+    )
+    executor.register_handler(
+        "handoff_human",
+        lambda **kw: _handoff_human_handler(**kw),
+    )
+    return executor
