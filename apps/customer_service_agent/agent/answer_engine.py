@@ -249,11 +249,17 @@ class AnswerEngine:
                 sources=hits,
             )
 
-        # 5. 解析 + 恢复脱敏
+        # 5. 解析 + 恢复脱敏（masked_answer 保留占位符版本用于落库）
         answer, matched = self.parse_json_response(resp.content)
+        masked_answer = answer
         answer = self.restore(masker, answer)
 
-        return AnswerResult(answer=answer, matched=matched, sources=hits)
+        return AnswerResult(
+            answer=answer,
+            matched=matched,
+            sources=hits,
+            masked_answer=masked_answer,
+        )
 
     # ===== 模式二：Agent（有状态、有工具循环）=====
 

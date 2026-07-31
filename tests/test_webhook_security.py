@@ -214,8 +214,11 @@ class TestWebhook403Response:
 
     @pytest.mark.asyncio
     async def test_valid_signature_not_403(self):
-        """正确签名不应返回 403（mock 下游处理）。"""
+        """正确签名不应返回 403（mock 下游，走真实 AgentLoop 链路）。"""
         from apps.customer_service_agent.api.webhooks import router
+        from apps.customer_service_agent.agent.session import Session
+        from knowledge_platform.knowledge_service.service import RAGContext
+        from runtime.llm.llm_provider import LLMResponse
 
         app = FastAPI()
         app.include_router(router)
@@ -227,7 +230,13 @@ class TestWebhook403Response:
 
         adapter = _make_adapter_with_secret(secret)
 
-        # mock 下游：send_message 不实际调用 API
+        # mock 下游：LLM 直接返回最终回答，RAG 无命中
+        mock_llm = MagicMock()
+        mock_llm.chat = AsyncMock(
+            return_value=LLMResponse(content="您好，请问有什么可以帮您？")
+        )
+        mock_rag = MagicMock()
+        mock_rag.retrieve = AsyncMock(return_value=RAGContext(hits=[], prompt_block=""))
         adapter.send_message = AsyncMock(return_value="ok")
 
         with (
@@ -237,21 +246,19 @@ class TestWebhook403Response:
             ),
             patch(
                 "apps.customer_service_agent.api.webhooks.get_llm",
+                return_value=mock_llm,
             ),
             patch(
                 "apps.customer_service_agent.api.webhooks._get_rag",
+                return_value=mock_rag,
             ),
-            patch(
-                "apps.customer_service_agent.api.webhooks.AgentLoop"
-            ) as mock_loop_cls,
             patch(
                 "apps.customer_service_agent.api.webhooks.get_session_store"
             ) as mock_store_fn,
         ):
-            # mock session store
             mock_store = AsyncMock()
             mock_store.get_or_create = AsyncMock(
-                return_value=MagicMock(
+                return_value=Session(
                     session_id="s1",
                     platform="doudian",
                     buyer_id="b1",
@@ -261,18 +268,6 @@ class TestWebhook403Response:
             mock_store.save_message = AsyncMock()
             mock_store.save_handoff = AsyncMock()
             mock_store_fn.return_value = mock_store
-
-            # mock agent loop
-            mock_loop = MagicMock()
-            mock_loop.handle = AsyncMock(
-                return_value=MagicMock(
-                    reply="您好",
-                    handoff=False,
-                    tool_calls_made=[],
-                    masked_answer="您好",
-                )
-            )
-            mock_loop_cls.return_value = mock_loop
 
             async with httpx.AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -286,6 +281,10 @@ class TestWebhook403Response:
                 assert resp.status_code == 200
                 body = resp.json()
                 assert body["ok"] is True
+                assert body["reply"] == "您好，请问有什么可以帮您？"
+
+            # 真实 AgentLoop 链路应完成：用户消息 + 助手回复各落库一次
+            assert mock_store.save_message.await_count == 2
 
     @pytest.mark.asyncio
     async def test_403_does_not_call_agent_loop(self):

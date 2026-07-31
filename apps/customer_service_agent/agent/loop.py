@@ -26,6 +26,8 @@ class AgentResult:
     reply: str
     handoff: bool = False
     tool_calls_made: list[str] = None  # type: ignore[assignment]
+    masked_answer: str = ""
+    """脱敏版回复（含占位符），供 webhook 落库，DB 不存明文。"""
 
 
 class AgentLoop:
@@ -57,4 +59,5 @@ class AgentLoop:
             reply=result.answer,
             handoff=result.handoff,
             tool_calls_made=result.tool_calls_made,
+            masked_answer=result.masked_answer or result.answer,
         )
