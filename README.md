@@ -5,9 +5,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](#)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-green)](#)
-[![Tests: 56 passed](https://img.shields.io/badge/tests-56%20passed-brightgreen)](#)
+[![Tests: 112 passed](https://img.shields.io/badge/tests-112%20passed-brightgreen)](#)
 
-替代每月 2500 元外包客服：严格 RAG 答疑（少幻觉）、多模态咨询（截图+文字）、
+严格 RAG 答疑（少幻觉）、多模态咨询（截图+文字）、
 订单/物流/商品实时查询（Function Calling + 抖店开放平台）、敏感信息全路径脱敏、多轮会话持久化。
 
 ---
@@ -29,7 +29,7 @@
 - **管理后台**：5 页面 SPA（仪表盘 / 知识库 CRUD / 会话记录 / 测试问答 / 批量测试），
   批量测试支持 Excel 上传 → 后台异步批量问答 → 人工审核 → 结果导出
 - **Provider 可替换**：LLM / VLM / Embedding / Rerank 全部抽象为接口，模型路由可切换
-- **56 项自动化测试**：冒烟 / 多模态 / 工具注册执行 / 脱敏 / 抖店适配器 / RAG-LLM 集成
+- **112 项自动化测试**：冒烟 / 多模态 / 工具注册执行 / 脱敏 / 抖店适配器 / RAG-LLM 集成 / 会话存储 / Webhook 安全
 
 ## 总体架构
 
@@ -87,7 +87,7 @@
 | 向量库 | ChromaDB（cosine，本地持久化） | FAQ / 商品 / 政策知识检索 |
 | 关系库 | SQLAlchemy 2.x async + aiosqlite | 会话 / 消息 / 转人工任务 |
 | 安全 | 自研 Masker + RBAC 接口 | 全路径脱敏、角色权限 |
-| 测试 | pytest + pytest-asyncio | 56 项测试 |
+| 测试 | pytest + pytest-asyncio | 112 项测试 |
 
 ## 快速开始
 
@@ -108,7 +108,7 @@ python main.py
 uvicorn apps.customer_service_agent.main:create_app --factory --host 0.0.0.0 --port 8000
 
 # 5. 测试
-python -m pytest tests/ -q    # 56 项全部通过
+python -m pytest tests/ -q    # 112 项全部通过
 ```
 
 CLI 本地调试：
@@ -151,7 +151,7 @@ knowledge_platform/            # RAG 流水线 · Chroma 检索 · 灌库（评�
 tool_center/                   # 工具注册表 · 执行器
 security/                      # 脱敏 Masker · RBAC
 common/                        # 配置 · 日志 · DB ORM
-tests/                         # 56 项测试
+tests/                         # 112 项测试
 ```
 
 ## 已知缺口（演进中）
