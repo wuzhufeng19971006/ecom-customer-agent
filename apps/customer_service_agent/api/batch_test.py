@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import io
 import time
-from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -39,6 +38,23 @@ from common.logger.logger import get_logger
 
 router = APIRouter(prefix="/admin/api/batch-test", tags=["batch-test"])
 log = get_logger(__name__)
+
+# ===== 共享 DB 引擎（避免每个请求/后台任务创建/销毁连接池）=====
+
+_shared_engine: Any = None
+_shared_session_maker: Any = None
+
+
+def _get_db():
+    """获取共享的异步 DB session maker，惰性初始化。"""
+    global _shared_engine, _shared_session_maker
+    if _shared_engine is None:
+        _shared_engine = create_async_engine(settings.database_url, echo=False)
+        _shared_session_maker = async_sessionmaker(
+            _shared_engine, expire_on_commit=False
+        )
+    return _shared_session_maker
+
 
 # 列名映射：支持多种常见表头写法
 COLUMN_ALIASES = {
@@ -105,13 +121,6 @@ def _parse_excel(data: bytes) -> list[dict[str, str]]:
     return items
 
 
-async def _get_session():
-    """获取异步 DB session 与 engine。"""
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-    return engine, async_session
-
-
 # ===== Pydantic =====
 
 
@@ -175,29 +184,26 @@ async def upload_excel(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(400, "未解析到有效问题，请检查 Excel 内容")
 
     task_id = str(uuid4())
-    engine, async_session = await _get_session()
+    db_maker = _get_db()
 
-    try:
-        async with async_session() as session:
-            # 创建任务
-            session.add(BatchTestTask(
-                id=task_id,
-                filename=file.filename,
-                total=len(items),
-                status="pending",
+    async with db_maker() as session:
+        # 创建任务
+        session.add(BatchTestTask(
+            id=task_id,
+            filename=file.filename,
+            total=len(items),
+            status="pending",
+        ))
+        # 创建条目
+        for i, item in enumerate(items):
+            session.add(BatchTestItem(
+                task_id=task_id,
+                seq=i + 1,
+                question=item["question"],
+                expected_answer=item.get("expected_answer"),
+                category=item.get("category"),
             ))
-            # 创建条目
-            for i, item in enumerate(items):
-                session.add(BatchTestItem(
-                    task_id=task_id,
-                    seq=i + 1,
-                    question=item["question"],
-                    expected_answer=item.get("expected_answer"),
-                    category=item.get("category"),
-                ))
-            await session.commit()
-    finally:
-        await engine.dispose()
+        await session.commit()
 
     log.info("batch_test.uploaded", task_id=task_id, total=len(items))
     return {"task_id": task_id, "total": len(items), "filename": file.filename}
@@ -206,40 +212,45 @@ async def upload_excel(file: UploadFile = File(...)) -> dict[str, Any]:
 @router.post("/{task_id}/run")
 async def run_batch_test(task_id: str) -> dict[str, Any]:
     """启动批量测试（后台异步执行）。"""
-    engine, async_session = await _get_session()
+    db_maker = _get_db()
 
-    try:
-        async with async_session() as session:
-            task = await session.get(BatchTestTask, task_id)
-            if not task:
-                raise HTTPException(404, "任务不存在")
-            if task.status == "running":
-                raise HTTPException(409, "任务正在运行中")
-            if task.status == "completed":
-                raise HTTPException(409, "任务已完成，请重新上传")
+    async with db_maker() as session:
+        task = await session.get(BatchTestTask, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
+        if task.status == "running":
+            raise HTTPException(409, "任务正在运行中")
+        if task.status == "completed":
+            raise HTTPException(409, "任务已完成，请重新上传")
+        await session.execute(
+            update(BatchTestTask).where(BatchTestTask.id == task_id).values(status="running")
+        )
+        await session.commit()
 
-            # 标记为运行中
-            await session.execute(
-                update(BatchTestTask).where(BatchTestTask.id == task_id).values(status="running")
-            )
-            await session.commit()
-    finally:
-        await engine.dispose()
-
-    # 后台执行
-    asyncio.create_task(_run_test_background(task_id))
+    # 后台执行（添加异常回调，避免 "Task exception was never retrieved" 警告）
+    bg_task = asyncio.create_task(_run_test_background(task_id))
+    bg_task.add_done_callback(_bg_task_callback)
 
     return {"task_id": task_id, "status": "running"}
 
 
+def _bg_task_callback(task: asyncio.Task) -> None:
+    """后台任务完成回调，记录未捕获异常。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        log.error("batch_test.bg_task_crashed", error=str(exc))
+
+
 async def _run_test_background(task_id: str) -> None:
-    """后台执行批量测试。"""
-    engine, async_session = await _get_session()
+    """后台执行批量测试（使用共享 DB 引擎）。"""
+    db_maker = _get_db()
     qa = QAService()
     completed = 0
 
     try:
-        async with async_session() as session:
+        async with db_maker() as session:
             result = await session.execute(
                 select(BatchTestItem)
                 .where(BatchTestItem.task_id == task_id)
@@ -257,7 +268,7 @@ async def _run_test_background(task_id: str) -> None:
                     f"[{h.collection}] {h.text[:100]}" for h in resp.sources
                 ) if resp.sources else ""
 
-                async with async_session() as session:
+                async with db_maker() as session:
                     await session.execute(
                         update(BatchTestItem).where(BatchTestItem.id == item.id).values(
                             actual_answer=resp.answer,
@@ -278,7 +289,7 @@ async def _run_test_background(task_id: str) -> None:
 
             except Exception as e:
                 log.error("batch_test.item_failed", item_id=item.id, error=str(e))
-                async with async_session() as session:
+                async with db_maker() as session:
                     await session.execute(
                         update(BatchTestItem).where(BatchTestItem.id == item.id).values(
                             test_status="error",
@@ -295,7 +306,7 @@ async def _run_test_background(task_id: str) -> None:
             completed += 1
 
         # 标记完成
-        async with async_session() as session:
+        async with db_maker() as session:
             await session.execute(
                 update(BatchTestTask).where(BatchTestTask.id == task_id).values(status="completed")
             )
@@ -305,13 +316,11 @@ async def _run_test_background(task_id: str) -> None:
 
     except Exception as e:
         log.error("batch_test.background_failed", task_id=task_id, error=str(e))
-        async with async_session() as session:
+        async with db_maker() as session:
             await session.execute(
-                update(BatchTestTask).where(BatchTestTask.id == task_id).values(status="completed")
+                update(BatchTestTask).where(BatchTestTask.id == task_id).values(status="failed")
             )
             await session.commit()
-    finally:
-        await engine.dispose()
 
 
 @router.get("")
@@ -320,56 +329,61 @@ async def list_tasks(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     """列出所有测试任务。"""
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            # 总数
-            count_r = await session.execute(select(func.count()).select_from(BatchTestTask))
-            total = count_r.scalar() or 0
+    db_maker = _get_db()
+    async with db_maker() as session:
+        # 总数
+        count_r = await session.execute(select(func.count()).select_from(BatchTestTask))
+        total = count_r.scalar() or 0
 
-            # 分页列表
-            result = await session.execute(
-                select(BatchTestTask)
-                .order_by(BatchTestTask.created_at.desc())
-                .offset(offset)
-                .limit(limit)
+        # 分页列表
+        result = await session.execute(
+            select(BatchTestTask)
+            .order_by(BatchTestTask.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        tasks = result.scalars().all()
+
+        # 一次性获取所有任务的审核统计（避免 N+1）
+        task_ids = [t.id for t in tasks]
+        review_stats = {}
+        if task_ids:
+            stats_query = (
+                select(
+                    BatchTestItem.task_id,
+                    BatchTestItem.review_status,
+                    func.count().label("cnt"),
+                )
+                .where(BatchTestItem.task_id.in_(task_ids))
+                .group_by(BatchTestItem.task_id, BatchTestItem.review_status)
             )
-            tasks = result.scalars().all()
+            stats_result = await session.execute(stats_query)
+            for row in stats_result:
+                if row.task_id not in review_stats:
+                    review_stats[row.task_id] = {"correct": 0, "incorrect": 0}
+                if row.review_status in ("correct", "incorrect"):
+                    review_stats[row.task_id][row.review_status] = row.cnt
 
-            items = []
-            for t in tasks:
-                # 统计审核情况
-                correct_r = await session.execute(
-                    select(func.count()).select_from(BatchTestItem)
-                    .where(BatchTestItem.task_id == t.id)
-                    .where(BatchTestItem.review_status == "correct")
-                )
-                correct = correct_r.scalar() or 0
+        items = []
+        for t in tasks:
+            stats = review_stats.get(t.id, {"correct": 0, "incorrect": 0})
+            correct = stats["correct"]
+            incorrect = stats["incorrect"]
+            reviewed = correct + incorrect
+            accuracy = round(correct / reviewed * 100, 1) if reviewed > 0 else None
 
-                incorrect_r = await session.execute(
-                    select(func.count()).select_from(BatchTestItem)
-                    .where(BatchTestItem.task_id == t.id)
-                    .where(BatchTestItem.review_status == "incorrect")
-                )
-                incorrect = incorrect_r.scalar() or 0
-
-                reviewed = correct + incorrect
-                accuracy = round(correct / reviewed * 100, 1) if reviewed > 0 else None
-
-                items.append({
-                    "id": t.id,
-                    "filename": t.filename,
-                    "total": t.total,
-                    "completed": t.completed,
-                    "status": t.status,
-                    "reviewed": reviewed,
-                    "correct": correct,
-                    "incorrect": incorrect,
-                    "accuracy": accuracy,
-                    "created_at": t.created_at.isoformat() if t.created_at else None,
-                })
-    finally:
-        await engine.dispose()
+            items.append({
+                "id": t.id,
+                "filename": t.filename,
+                "total": t.total,
+                "completed": t.completed,
+                "status": t.status,
+                "reviewed": reviewed,
+                "correct": correct,
+                "incorrect": incorrect,
+                "accuracy": accuracy,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -377,52 +391,49 @@ async def list_tasks(
 @router.get("/{task_id}/status")
 async def get_status(task_id: str) -> dict[str, Any]:
     """获取任务进度。"""
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            task = await session.get(BatchTestTask, task_id)
-            if not task:
-                raise HTTPException(404, "任务不存在")
+    db_maker = _get_db()
+    async with db_maker() as session:
+        task = await session.get(BatchTestTask, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
 
-            # 统计
-            done_r = await session.execute(
-                select(func.count()).select_from(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .where(BatchTestItem.test_status == "done")
-            )
-            done = done_r.scalar() or 0
+        # 统计
+        done_r = await session.execute(
+            select(func.count()).select_from(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .where(BatchTestItem.test_status == "done")
+        )
+        done = done_r.scalar() or 0
 
-            error_r = await session.execute(
-                select(func.count()).select_from(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .where(BatchTestItem.test_status == "error")
-            )
-            errors = error_r.scalar() or 0
+        error_r = await session.execute(
+            select(func.count()).select_from(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .where(BatchTestItem.test_status == "error")
+        )
+        errors = error_r.scalar() or 0
 
-            matched_r = await session.execute(
-                select(func.count()).select_from(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .where(BatchTestItem.matched == True)  # noqa: E712
-            )
-            matched = matched_r.scalar() or 0
+        matched_r = await session.execute(
+            select(func.count()).select_from(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .where(BatchTestItem.matched == True)  # noqa: E712
+        )
+        matched = matched_r.scalar() or 0
 
-            correct_r = await session.execute(
-                select(func.count()).select_from(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .where(BatchTestItem.review_status == "correct")
-            )
-            correct = correct_r.scalar() or 0
+        correct_r = await session.execute(
+            select(func.count()).select_from(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .where(BatchTestItem.review_status == "correct")
+        )
+        correct = correct_r.scalar() or 0
 
-            incorrect_r = await session.execute(
-                select(func.count()).select_from(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .where(BatchTestItem.review_status == "incorrect")
-            )
-            incorrect = incorrect_r.scalar() or 0
+        incorrect_r = await session.execute(
+            select(func.count()).select_from(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .where(BatchTestItem.review_status == "incorrect")
+        )
+        incorrect = incorrect_r.scalar() or 0
 
-            pending_review = task.completed - correct - incorrect
-    finally:
-        await engine.dispose()
+        pending_review = task.completed - correct - incorrect
 
     return {
         "task_id": task_id,
@@ -448,70 +459,63 @@ async def get_results(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     """获取测试结果（分页，可按审核状态筛选）。"""
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            task = await session.get(BatchTestTask, task_id)
-            if not task:
-                raise HTTPException(404, "任务不存在")
+    db_maker = _get_db()
+    async with db_maker() as session:
+        task = await session.get(BatchTestTask, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
 
-            # 构建查询
-            base_query = select(BatchTestItem).where(BatchTestItem.task_id == task_id)
-            count_query = select(func.count()).select_from(BatchTestItem).where(BatchTestItem.task_id == task_id)
+        # 构建查询
+        base_query = select(BatchTestItem).where(BatchTestItem.task_id == task_id)
+        count_query = select(func.count()).select_from(BatchTestItem).where(BatchTestItem.task_id == task_id)
 
-            if review_filter:
-                base_query = base_query.where(BatchTestItem.review_status == review_filter)
-                count_query = count_query.where(BatchTestItem.review_status == review_filter)
+        if review_filter:
+            base_query = base_query.where(BatchTestItem.review_status == review_filter)
+            count_query = count_query.where(BatchTestItem.review_status == review_filter)
 
-            # 总数
-            total_r = await session.execute(count_query)
-            total = total_r.scalar() or 0
+        # 总数
+        total_r = await session.execute(count_query)
+        total = total_r.scalar() or 0
 
-            # 分页
-            result = await session.execute(
-                base_query.order_by(BatchTestItem.seq).offset(offset).limit(limit)
-            )
-            items = result.scalars().all()
+        # 分页
+        result = await session.execute(
+            base_query.order_by(BatchTestItem.seq).offset(offset).limit(limit)
+        )
+        items = result.scalars().all()
 
-            data = []
-            for it in items:
-                data.append({
-                    "id": it.id,
-                    "seq": it.seq,
-                    "question": it.question,
-                    "expected_answer": it.expected_answer,
-                    "category": it.category,
-                    "actual_answer": it.actual_answer,
-                    "matched": it.matched,
-                    "sources_count": it.sources_count,
-                    "sources_text": it.sources_text,
-                    "response_time_ms": it.response_time_ms,
-                    "test_status": it.test_status,
-                    "error_msg": it.error_msg,
-                    "review_status": it.review_status,
-                    "review_reason": it.review_reason,
-                })
-    finally:
-        await engine.dispose()
-
+        data = []
+        for it in items:
+            data.append({
+                "id": it.id,
+                "seq": it.seq,
+                "question": it.question,
+                "expected_answer": it.expected_answer,
+                "category": it.category,
+                "actual_answer": it.actual_answer,
+                "matched": it.matched,
+                "sources_count": it.sources_count,
+                "sources_text": it.sources_text,
+                "response_time_ms": it.response_time_ms,
+                "test_status": it.test_status,
+                "error_msg": it.error_msg,
+                "review_status": it.review_status,
+                "review_reason": it.review_reason,
+            })
     return {"items": data, "total": total, "limit": limit, "offset": offset}
 
 
 @router.put("/items/{item_id}")
 async def review_item(item_id: int, body: ReviewUpdate) -> dict[str, Any]:
     """审核单条结果：标记正确/错误 + 原因。"""
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            item = await session.get(BatchTestItem, item_id)
-            if not item:
-                raise HTTPException(404, "条目不存在")
+    db_maker = _get_db()
+    async with db_maker() as session:
+        item = await session.get(BatchTestItem, item_id)
+        if not item:
+            raise HTTPException(404, "条目不存在")
 
-            item.review_status = body.review_status
-            item.review_reason = body.review_reason
-            await session.commit()
-    finally:
-        await engine.dispose()
+        item.review_status = body.review_status
+        item.review_reason = body.review_reason
+        await session.commit()
 
     log.info("batch_test.reviewed", item_id=item_id, status=body.review_status)
     return {"id": item_id, "review_status": body.review_status, "review_reason": body.review_reason}
@@ -520,22 +524,19 @@ async def review_item(item_id: int, body: ReviewUpdate) -> dict[str, Any]:
 @router.delete("/{task_id}")
 async def delete_task(task_id: str) -> dict[str, Any]:
     """删除测试任务及其所有条目。"""
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            task = await session.get(BatchTestTask, task_id)
-            if not task:
-                raise HTTPException(404, "任务不存在")
+    db_maker = _get_db()
+    async with db_maker() as session:
+        task = await session.get(BatchTestTask, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
 
-            await session.execute(
-                delete(BatchTestItem).where(BatchTestItem.task_id == task_id)
-            )
-            await session.execute(
-                delete(BatchTestTask).where(BatchTestTask.id == task_id)
-            )
-            await session.commit()
-    finally:
-        await engine.dispose()
+        await session.execute(
+            delete(BatchTestItem).where(BatchTestItem.task_id == task_id)
+        )
+        await session.execute(
+            delete(BatchTestTask).where(BatchTestTask.id == task_id)
+        )
+        await session.commit()
 
     log.info("batch_test.deleted", task_id=task_id)
     return {"deleted": task_id}
@@ -546,21 +547,18 @@ async def export_results(task_id: str) -> StreamingResponse:
     """导出测试结果为 Excel（含审核列）。"""
     from openpyxl import Workbook
 
-    engine, async_session = await _get_session()
-    try:
-        async with async_session() as session:
-            task = await session.get(BatchTestTask, task_id)
-            if not task:
-                raise HTTPException(404, "任务不存在")
+    db_maker = _get_db()
+    async with db_maker() as session:
+        task = await session.get(BatchTestTask, task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
 
-            result = await session.execute(
-                select(BatchTestItem)
-                .where(BatchTestItem.task_id == task_id)
-                .order_by(BatchTestItem.seq)
-            )
-            items = result.scalars().all()
-    finally:
-        await engine.dispose()
+        result = await session.execute(
+            select(BatchTestItem)
+            .where(BatchTestItem.task_id == task_id)
+            .order_by(BatchTestItem.seq)
+        )
+        items = result.scalars().all()
 
     wb = Workbook()
     ws = wb.active

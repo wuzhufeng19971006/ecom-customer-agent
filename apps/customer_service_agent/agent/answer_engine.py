@@ -278,8 +278,8 @@ class AnswerEngine:
         # 1. 脱敏
         masked_text, masker = self.mask(user_text)
 
-        # 2. 兜底关键词
-        if self.check_human_keywords(user_text):
+        # 2. 兜底关键词（使用脱敏文本，与 RAG/LLM 路径保持一致）
+        if self.check_human_keywords(masked_text):
             msg = "已为您转接人工客服，请稍候。"
             return AnswerResult(answer=msg, masked_answer=msg, handoff=True)
 

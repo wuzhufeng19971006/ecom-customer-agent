@@ -93,11 +93,62 @@ class ChromaStore:
                     collection=collection,
                     id=doc_id,
                     text=result["documents"][0][i],
-                    score=1.0 - result["distances"][0][i],  # Chroma 返回距离
+                    score=1.0 - result["distances"][0][i],  # cosine 距离 → 相似度
                     metadata=result["metadatas"][0][i] or {},
                 )
             )
         return hits
+
+    # ------------------------------------------------------------------
+    # 公共 CRUD API（供 admin 等外部模块使用，避免直接访问 _collections）
+    # ------------------------------------------------------------------
+
+    def get_documents(
+        self,
+        collection: str,
+        *,
+        ids: list[str] | None = None,
+        where: dict[str, Any] | None = None,
+        where_document: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """读取集合中的文档，支持按 id / metadata / 文档内容过滤。
+
+        返回原始 ChromaDB 格式：{ids, documents, metadatas}。
+        """
+        if collection not in self._collections:
+            raise ValueError(f"unknown collection: {collection}")
+        return self._collections[collection].get(
+            ids=ids,
+            where=where,
+            where_document=where_document,
+        )
+
+    def update_document(
+        self,
+        collection: str,
+        doc_id: str,
+        *,
+        document: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """原地更新文档的文本和/或元数据（不含向量重新计算）。
+
+        注意：ChromaDB 的 update 会自动用内置 embedding 函数重新计算向量。
+        如果 ChromaStore 使用自定义 embedding_fn，应先 delete 再 add。
+        """
+        if collection not in self._collections:
+            raise ValueError(f"unknown collection: {collection}")
+        self._collections[collection].update(
+            ids=[doc_id],
+            documents=[document] if document is not None else None,
+            metadatas=[metadata] if metadata is not None else None,
+        )
+
+    def delete_document(self, collection: str, doc_id: str) -> None:
+        """删除指定文档。"""
+        if collection not in self._collections:
+            raise ValueError(f"unknown collection: {collection}")
+        self._collections[collection].delete(ids=[doc_id])
 
     def count(self, collection: str) -> int:
         return self._collections[collection].count()

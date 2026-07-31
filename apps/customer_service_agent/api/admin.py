@@ -19,17 +19,16 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update, func
+from sqlalchemy import delete, select, func
 
 from common.config.config import settings
-from common.database.database import Base, HandoffTask, MessageRow, SessionRow
+from common.database.database import MessageRow, SessionRow
 from common.logger.logger import get_logger
 from knowledge_platform.knowledge_service.retriever.retriever import (
     COLLECTIONS,
@@ -64,15 +63,41 @@ def _get_db():
 
 
 class KnowledgeCreate(BaseModel):
-    question: str = Field(..., min_length=1, max_length=500)
-    answer: str = Field(..., min_length=1)
+    """新增知识点。支持两种格式：
+
+    - QA 模式（question + answer）：高频问题、固定话术
+    - 纯知识模式（title + content）：规则、流程、产品说明等不易编 QA 的知识
+
+    两种模式二选一：填了 question 则用 QA 格式，否则用纯知识格式。
+    """
+    question: str | None = Field(default=None, max_length=500)
+    answer: str | None = None
+    title: str | None = Field(default=None, max_length=500)
+    content: str | None = None
     tags: list[str] = Field(default_factory=list)
     collection: str = Field(default="kb_faq")
 
+    def to_document(self) -> str:
+        """根据填充字段自动选择存储格式。"""
+        if self.question and self.answer:
+            return f"Q: {self.question}\nA: {self.answer}"
+        text = self.title or ""
+        body = self.content or self.answer or ""
+        if text and body:
+            return f"{text}\n{body}"
+        return text or body
+
+    def primary_text(self) -> str:
+        """返回主要文本（question 或 title），用于响应。"""
+        return self.question or self.title or ""
+
 
 class KnowledgeUpdate(BaseModel):
+    """更新知识点，字段全部可选，支持 QA 和纯知识格式互转。"""
     question: str | None = None
     answer: str | None = None
+    title: str | None = None
+    content: str | None = None
     tags: list[str] | None = None
 
 
@@ -127,29 +152,36 @@ async def list_knowledge(
         raise HTTPException(400, f"无效集合，可选: {COLLECTIONS}")
 
     store = get_store()
-    chroma_collection = store._collections[collection]
-    result = chroma_collection.get()
+
+    # 两层过滤：ChromaDB where_document 服务端粗筛（区分大小写）减少传输量，
+    # Python 侧再做 case-insensitive 精确过滤保证大小写不敏感
+    where_doc = {"$contains": search} if search else None
+    result = store.get_documents(collection, where_document=where_doc)
 
     items = []
+    search_lower = search.lower() if search else ""
     for i, doc_id in enumerate(result["ids"]):
         doc = result["documents"][i]
         meta = result["metadatas"][i] or {}
 
-        # 解析 Q: / A: 格式
+        # 大小写不敏感搜索过滤
+        if search_lower and search_lower not in doc.lower():
+            continue
+
+        # 解析存储格式：Q:/A: 为 QA 模式，否则为纯知识模式
         question = ""
         answer = ""
+        title = ""
+        content = ""
         if doc.startswith("Q:"):
             parts = doc.split("\nA:", 1)
             question = parts[0][3:].strip() if len(parts) > 0 else ""
             answer = parts[1].strip() if len(parts) > 1 else ""
         else:
-            answer = doc
-
-        # 搜索过滤
-        if search:
-            search_lower = search.lower()
-            if search_lower not in question.lower() and search_lower not in answer.lower():
-                continue
+            # 纯知识格式：第一行为 title，其余为 content
+            lines = doc.split("\n", 1)
+            title = lines[0].strip()
+            content = lines[1].strip() if len(lines) > 1 else ""
 
         tags_str = meta.get("tags", "")
         tags = tags_str.split(",") if tags_str else []
@@ -159,12 +191,15 @@ async def list_knowledge(
                 "id": doc_id,
                 "question": question,
                 "answer": answer,
+                "title": title,
+                "content": content,
                 "tags": tags,
                 "collection": collection,
                 "metadata": meta,
             }
         )
 
+    # 分页（ChromaDB get() 不支持 offset/limit，在 Python 侧分页）
     total = len(items)
     paged = items[offset : offset + limit]
     return {"items": paged, "total": total, "limit": limit, "offset": offset}
@@ -172,13 +207,20 @@ async def list_knowledge(
 
 @router.post("/knowledge")
 async def create_knowledge(item: KnowledgeCreate) -> dict[str, Any]:
-    """新增知识点，同步写入 ChromaDB。"""
+    """新增知识点，同步写入 ChromaDB。
+
+    支持 QA 模式（question+answer）和纯知识模式（title+content），
+    根据 item.to_document() 自动选择存储格式。
+    """
     if item.collection not in COLLECTIONS:
         raise HTTPException(400, f"无效集合，可选: {COLLECTIONS}")
 
+    doc = item.to_document()
+    if not doc.strip():
+        raise HTTPException(400, "请至少填写 QA 模式（问题+答案）或纯知识模式（标题+内容）")
+
     store = get_store()
     doc_id = str(uuid4())
-    doc = f"Q: {item.question}\nA: {item.answer}"
     meta = {"tags": ",".join(item.tags)} if item.tags else {}
 
     await store.add(item.collection, ids=[doc_id], documents=[doc], metadatas=[meta])
@@ -187,8 +229,10 @@ async def create_knowledge(item: KnowledgeCreate) -> dict[str, Any]:
 
     return {
         "id": doc_id,
-        "question": item.question,
-        "answer": item.answer,
+        "question": item.question or "",
+        "answer": item.answer or "",
+        "title": item.title or "",
+        "content": item.content or "",
         "tags": item.tags,
         "collection": item.collection,
     }
@@ -203,36 +247,68 @@ async def update_knowledge(
         raise HTTPException(400, f"无效集合，可选: {COLLECTIONS}")
 
     store = get_store()
-    chroma_collection = store._collections[collection]
 
-    # 读取原记录
-    existing = chroma_collection.get(ids=[doc_id])
+    # 读取原记录（通过公共 API）
+    existing = store.get_documents(collection, ids=[doc_id])
     if not existing["ids"]:
         raise HTTPException(404, "知识点不存在")
 
     old_doc = existing["documents"][0]
     old_meta = existing["metadatas"][0] or {}
 
-    # 解析原值
-    old_q = ""
-    old_a = ""
-    if old_doc.startswith("Q:"):
+    # 解析原值（兼容 QA 和纯知识两种格式）
+    old_q = old_a = old_title = old_content = ""
+    is_qa = old_doc.startswith("Q:")
+    if is_qa:
         parts = old_doc.split("\nA:", 1)
         old_q = parts[0][3:].strip()
         old_a = parts[1].strip() if len(parts) > 1 else ""
+    else:
+        lines = old_doc.split("\n", 1)
+        old_title = lines[0].strip()
+        old_content = lines[1].strip() if len(lines) > 1 else ""
 
-    # 合并更新
-    new_q = item.question if item.question is not None else old_q
-    new_a = item.answer if item.answer is not None else old_a
+    # 合并更新：优先用传入值，回退到原值
+    # 三种情况：
+    # 1. 只更新 tags（所有文本字段为 None）→ 保留原文档内容和格式
+    # 2. 编辑纯知识字段（title/content 非 None）→ 清除旧 QA 值
+    # 3. 编辑 QA 字段（question/answer 非 None）→ 清除旧知识值
+    if item.question is None and item.answer is None and item.title is None and item.content is None:
+        # 只更新 tags，保留原文档
+        new_q = old_q
+        new_a = old_a
+        new_title = old_title
+        new_content = old_content
+    elif item.title is not None or item.content is not None:
+        # 用户在编辑纯知识字段 → 清除旧 QA 值（避免格式判断回退到 QA）
+        new_q = item.question if item.question is not None else ""
+        new_a = item.answer if item.answer is not None else ""
+        new_title = item.title if item.title is not None else old_title
+        new_content = item.content if item.content is not None else old_content
+    else:
+        # 用户在编辑 QA 字段 → 清除旧知识值
+        new_q = item.question if item.question is not None else old_q
+        new_a = item.answer if item.answer is not None else old_a
+        new_title = ""
+        new_content = ""
     new_tags = item.tags if item.tags is not None else (
         old_meta.get("tags", "").split(",") if old_meta.get("tags") else []
     )
 
-    # 删除旧记录
-    chroma_collection.delete(ids=[doc_id])
+    # 根据更新后的字段决定存储格式（支持 QA ↔ 纯知识 互转）
+    if new_q and new_a:
+        new_doc = f"Q: {new_q}\nA: {new_a}"
+    elif new_title and new_content:
+        new_doc = f"{new_title}\n{new_content}"
+    elif new_q or new_a:
+        new_doc = f"Q: {new_q}\nA: {new_a}"
+    else:
+        new_doc = f"{new_title}\n{new_content}"
+
+    # 删除旧记录后写入新记录（通过公共 API）
+    store.delete_document(collection, doc_id)
 
     # 写入新记录
-    new_doc = f"Q: {new_q}\nA: {new_a}"
     new_meta = {"tags": ",".join(new_tags)} if new_tags else {}
     await store.add(collection, ids=[doc_id], documents=[new_doc], metadatas=[new_meta])
 
@@ -242,6 +318,8 @@ async def update_knowledge(
         "id": doc_id,
         "question": new_q,
         "answer": new_a,
+        "title": new_title,
+        "content": new_content,
         "tags": new_tags,
         "collection": collection,
     }
@@ -256,13 +334,12 @@ async def delete_knowledge(
         raise HTTPException(400, f"无效集合，可选: {COLLECTIONS}")
 
     store = get_store()
-    chroma_collection = store._collections[collection]
 
-    existing = chroma_collection.get(ids=[doc_id])
+    existing = store.get_documents(collection, ids=[doc_id])
     if not existing["ids"]:
         raise HTTPException(404, "知识点不存在")
 
-    chroma_collection.delete(ids=[doc_id])
+    store.delete_document(collection, doc_id)
     log.info("admin.knowledge_deleted", id=doc_id, collection=collection)
 
     return {"deleted": doc_id, "collection": collection}
@@ -282,10 +359,24 @@ async def batch_ingest(item: KnowledgeBatchIngest) -> dict[str, Any]:
     for r in item.records:
         q = str(r.get("question", "")).strip()
         a = str(r.get("answer", "")).strip()
-        if not q or not a:
+        title = str(r.get("title", "")).strip()
+        content = str(r.get("content", "")).strip()
+
+        # 统一排除四个业务字段，避免不相干字段泄漏进 metadata
+        meta = {k: v for k, v in r.items() if k not in ("question", "answer", "title", "content")}
+
+        # QA 模式优先，其次纯知识模式
+        if q and a:
+            doc = f"Q: {q}\nA: {a}"
+        elif title and content:
+            doc = f"{title}\n{content}"
+        elif q or a:
+            doc = f"Q: {q}\nA: {a}"
+        elif title or content:
+            doc = f"{title}\n{content}"
+        else:
             continue
-        doc = f"Q: {q}\nA: {a}"
-        meta = {k: v for k, v in r.items() if k not in ("question", "answer")}
+
         meta = {k: (",".join(v) if isinstance(v, list) else str(v)) for k, v in meta.items()}
         ids.append(str(uuid4()))
         documents.append(doc)

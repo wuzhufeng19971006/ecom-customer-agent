@@ -102,11 +102,11 @@ tr:hover { background: #fafbfd; }
 
 <div class="sidebar">
   <div class="sidebar-logo">AI 客服管理后台</div>
-  <div class="nav-item active" onclick="switchPage('dashboard')">📊 仪表盘</div>
-  <div class="nav-item" onclick="switchPage('knowledge')">📚 知识库管理</div>
-  <div class="nav-item" onclick="switchPage('sessions')">💬 会话记录</div>
-  <div class="nav-item" onclick="switchPage('playground')">🧪 测试问答</div>
-  <div class="nav-item" onclick="switchPage('batch-test')">📋 批量测试</div>
+  <div class="nav-item active" onclick="switchPage('dashboard', event)">📊 仪表盘</div>
+  <div class="nav-item" onclick="switchPage('knowledge', event)">📚 知识库管理</div>
+  <div class="nav-item" onclick="switchPage('sessions', event)">💬 会话记录</div>
+  <div class="nav-item" onclick="switchPage('playground', event)">🧪 测试问答</div>
+  <div class="nav-item" onclick="switchPage('batch-test', event)">📋 批量测试</div>
 </div>
 
 <div class="main">
@@ -284,12 +284,29 @@ tr:hover { background: #fafbfd; }
         </select>
       </div>
       <div class="form-group">
+        <label class="form-label">录入模式</label>
+        <div style="display:flex;gap:12px;align-items:center">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px">
+            <input type="radio" name="kb-mode" value="qa" checked onchange="switchKbMode('qa')"> QA 问答模式
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px">
+            <input type="radio" name="kb-mode" value="knowledge" onchange="switchKbMode('knowledge')"> 纯知识模式
+          </label>
+        </div>
+      </div>
+      <!-- QA 模式字段 -->
+      <div class="form-group" id="kb-qa-fields">
         <label class="form-label">问题</label>
         <input type="text" class="form-input" id="kb-modal-question" placeholder="如：发货时间是多久？">
-      </div>
-      <div class="form-group">
-        <label class="form-label">答案</label>
+        <label class="form-label" style="margin-top:12px">答案</label>
         <textarea class="form-textarea" id="kb-modal-answer" placeholder="如：现货商品下单后24小时内发货..."></textarea>
+      </div>
+      <!-- 纯知识模式字段 -->
+      <div class="form-group" id="kb-knowledge-fields" style="display:none">
+        <label class="form-label">标题</label>
+        <input type="text" class="form-input" id="kb-modal-title" placeholder="如：优惠券使用规则">
+        <label class="form-label" style="margin-top:12px">内容</label>
+        <textarea class="form-textarea" id="kb-modal-content" placeholder="如：优惠券无法使用的5种原因...（支持多行）" style="min-height:120px"></textarea>
       </div>
       <div class="form-group">
         <label class="form-label">标签（逗号分隔）</label>
@@ -423,11 +440,12 @@ function toast(msg, type='success') {
   setTimeout(() => t.remove(), 3000);
 }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
-function switchPage(name) {
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function switchPage(name, evt) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
-  event.target.classList.add('active');
+  evt.currentTarget.classList.add('active');
   if (name === 'dashboard') loadStats();
   if (name === 'knowledge') loadKnowledge();
   if (name === 'sessions') loadSessions();
@@ -459,18 +477,34 @@ async function loadKnowledge() {
   if (!data.items.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无知识点，点击右上角新增</td></tr>';
   } else {
-    tbody.innerHTML = data.items.map(item => `
+    tbody.innerHTML = data.items.map(item => {
+      const isQA = !!item.question;
+      const col1 = isQA ? escapeHtml(item.question) : `<span style="color:#888">[知识]</span> ${escapeHtml(item.title || '')}`;
+      const col2 = isQA ? escapeHtml(item.answer) : escapeHtml((item.content || '').substring(0, 80) + ((item.content||'').length > 80 ? '...' : ''));
+      return `
       <tr>
-        <td>${escapeHtml(item.question)}</td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(item.answer)}</td>
+        <td>${col1}</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${col2}</td>
         <td>${(item.tags||[]).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</td>
         <td>
           <button class="btn btn-outline btn-sm" onclick="editKnowledge('${item.id}','${collection}')">编辑</button>
           <button class="btn btn-danger" onclick="deleteKnowledge('${item.id}','${collection}')">删除</button>
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
   renderPagination('kb-pagination', data.total, kbOffset, (newOffset) => { kbOffset = newOffset; loadKnowledge(); });
+}
+function switchKbMode(mode) {
+  const qaFields = document.getElementById('kb-qa-fields');
+  const knFields = document.getElementById('kb-knowledge-fields');
+  if (mode === 'qa') {
+    qaFields.style.display = '';
+    knFields.style.display = 'none';
+  } else {
+    qaFields.style.display = 'none';
+    knFields.style.display = '';
+  }
 }
 function openKnowledgeModal() {
   document.getElementById('knowledge-modal-title').textContent = '新增知识点';
@@ -478,7 +512,12 @@ function openKnowledgeModal() {
   document.getElementById('kb-modal-collection').value = document.getElementById('kb-collection').value;
   document.getElementById('kb-modal-question').value = '';
   document.getElementById('kb-modal-answer').value = '';
+  document.getElementById('kb-modal-title').value = '';
+  document.getElementById('kb-modal-content').value = '';
   document.getElementById('kb-modal-tags').value = '';
+  // 默认 QA 模式
+  document.querySelector('input[name="kb-mode"][value="qa"]').checked = true;
+  switchKbMode('qa');
   document.getElementById('knowledge-modal').classList.add('show');
 }
 function editKnowledge(id, collection) {
@@ -491,8 +530,22 @@ function editKnowledge(id, collection) {
       document.getElementById('knowledge-modal-title').textContent = '编辑知识点';
       document.getElementById('kb-edit-id').value = id;
       document.getElementById('kb-modal-collection').value = collection;
-      document.getElementById('kb-modal-question').value = item.question;
-      document.getElementById('kb-modal-answer').value = item.answer;
+      // 根据数据自动切换到对应模式
+      if (item.question) {
+        document.querySelector('input[name="kb-mode"][value="qa"]').checked = true;
+        switchKbMode('qa');
+        document.getElementById('kb-modal-question').value = item.question;
+        document.getElementById('kb-modal-answer').value = item.answer;
+        document.getElementById('kb-modal-title').value = '';
+        document.getElementById('kb-modal-content').value = '';
+      } else {
+        document.querySelector('input[name="kb-mode"][value="knowledge"]').checked = true;
+        switchKbMode('knowledge');
+        document.getElementById('kb-modal-question').value = '';
+        document.getElementById('kb-modal-answer').value = '';
+        document.getElementById('kb-modal-title').value = item.title || '';
+        document.getElementById('kb-modal-content').value = item.content || '';
+      }
       document.getElementById('kb-modal-tags').value = (item.tags || []).join(',');
       document.getElementById('knowledge-modal').classList.add('show');
     });
@@ -500,21 +553,33 @@ function editKnowledge(id, collection) {
 async function saveKnowledge() {
   const id = document.getElementById('kb-edit-id').value;
   const collection = document.getElementById('kb-modal-collection').value;
-  const question = document.getElementById('kb-modal-question').value.trim();
-  const answer = document.getElementById('kb-modal-answer').value.trim();
   const tags = document.getElementById('kb-modal-tags').value.split(',').map(t => t.trim()).filter(Boolean);
-  if (!question || !answer) { toast('问题和答案不能为空', 'error'); return; }
+  const mode = document.querySelector('input[name="kb-mode"]:checked').value;
+  let body = { tags, collection };
+  if (mode === 'qa') {
+    const question = document.getElementById('kb-modal-question').value.trim();
+    const answer = document.getElementById('kb-modal-answer').value.trim();
+    if (!question || !answer) { toast('问题和答案不能为空', 'error'); return; }
+    body.question = question;
+    body.answer = answer;
+  } else {
+    const title = document.getElementById('kb-modal-title').value.trim();
+    const content = document.getElementById('kb-modal-content').value.trim();
+    if (!title || !content) { toast('标题和内容不能为空', 'error'); return; }
+    body.title = title;
+    body.content = content;
+  }
   try {
     if (id) {
       await fetch(`${API}/knowledge/${id}?collection=${collection}`, {
         method: 'PUT', headers: {'Content-Type':'application/json; charset=utf-8'},
-        body: JSON.stringify({question, answer, tags})
+        body: JSON.stringify(body)
       });
       toast('知识点已更新');
     } else {
       await fetch(`${API}/knowledge`, {
         method: 'POST', headers: {'Content-Type':'application/json; charset=utf-8'},
-        body: JSON.stringify({question, answer, tags, collection})
+        body: JSON.stringify(body)
       });
       toast('知识点已新增');
     }
@@ -653,9 +718,12 @@ async function loadQuickQuestions() {
       container.innerHTML = '<span style="font-size:13px;color:var(--text-muted)">知识库暂无FAQ，请先录入</span>';
       return;
     }
-    container.innerHTML = data.items.map(item =>
+    container.innerHTML = data.items.filter(item => item.question).map(item =>
       `<span class="tag" style="cursor:pointer;padding:6px 12px;font-size:13px" onclick="useQuickQuestion('${escapeAttr(item.question)}')">${escapeHtml(item.question.substring(0, 30))}${item.question.length > 30 ? '...' : ''}</span>`
     ).join('');
+    if (!container.innerHTML) {
+      container.innerHTML = '<span style="font-size:13px;color:var(--text-muted)">知识库暂无QA问答，请先录入</span>';
+    }
   } catch(e) {
     document.getElementById('pg-quick-questions').innerHTML = '<span style="font-size:13px;color:var(--text-muted)">加载失败</span>';
   }
@@ -879,7 +947,7 @@ async function loadBtTasks() {
     }
     tbody.innerHTML = data.items.map(t => {
       const progress = t.total > 0 ? Math.round(t.completed / t.total * 100) : 0;
-      const statusText = { pending: '等待中', running: '运行中', completed: '已完成' }[t.status] || t.status;
+      const statusText = { pending: '等待中', running: '运行中', completed: '已完成', failed: '失败' }[t.status] || t.status;
       const accText = t.accuracy !== null ? `${t.accuracy}%` : '-';
       const time = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : '-';
       return `<tr>
@@ -891,7 +959,7 @@ async function loadBtTasks() {
         <td style="font-size:13px">${time}</td>
         <td>
           <button class="btn btn-outline btn-sm" onclick="viewBtResults('${t.id}','${escapeAttr(t.filename)}')">查看结果</button>
-          ${t.status === 'pending' ? `<button class="btn btn-primary btn-sm" onclick="runBatchTest('${t.id}','${escapeAttr(t.filename)}')">开始测试</button>` : ''}
+          ${t.status === 'pending' || t.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="runBatchTest('${t.id}','${escapeAttr(t.filename)}')">${t.status === 'failed' ? '重新测试' : '开始测试'}</button>` : ''}
           <button class="btn btn-danger" onclick="deleteBtTask('${t.id}')">删除</button>
         </td>
       </tr>`;
