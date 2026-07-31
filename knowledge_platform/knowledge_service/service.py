@@ -44,7 +44,24 @@ class RAGPipeline:
             documents=[h.text for h in candidates],
             top_n=top_n,
         )
-        final = [candidates[r.index] for r in ranked]
+        final = [
+            candidates[r.index] for r in ranked if 0 <= r.index < len(candidates)
+        ]
+
+        # embedding 强命中兜底：召回阶段的第一名若被 reranker 挤出，强制补到最前。
+        # 实测 jina-reranker-v2-base-multilingual 对中文口语化问法（如
+        # "小孩2岁舞台演出能用吗" vs "彩妆会伤害皮肤吗"）语义理解弱，
+        # 会把 embedding 正确召回的强相关文档排到末尾导致漏检。
+        top_embed_idx = max(
+            range(len(candidates)), key=lambda i: candidates[i].score
+        )
+        if top_embed_idx not in {r.index for r in ranked}:
+            log.warning(
+                "rag.rerank_dropped_top_embedding",
+                query=query[:60],
+                doc=candidates[top_embed_idx].text[:50],
+            )
+            final.insert(0, candidates[top_embed_idx])
 
         blocks = [
             f"[{h.collection}] {h.text}\n(metadata: {h.metadata})"

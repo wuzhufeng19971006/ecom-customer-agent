@@ -16,7 +16,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from common.config.config import settings
 from common.logger.logger import get_logger
-from runtime.llm.llm_provider import LLMProvider, LLMResponse, Message, ToolSpec
+from runtime.llm.llm_provider import ImagePart, LLMProvider, LLMResponse, Message, TextPart, ToolSpec
 
 log = get_logger(__name__)
 
@@ -86,7 +86,36 @@ class DeepSeekLLM(LLMProvider):
 
     @staticmethod
     def _dump_message(m: Message) -> dict[str, Any]:
-        out: dict[str, Any] = {"role": m.role, "content": m.content}
+        out: dict[str, Any] = {"role": m.role}
+        # 多模态消息：content_parts 优先，序列化为 OpenAI 格式
+        if m.content_parts:
+            parts: list[dict[str, Any]] = []
+            for p in m.content_parts:
+                if isinstance(p, TextPart):
+                    parts.append({"type": "text", "text": p.text})
+                elif isinstance(p, ImagePart):
+                    if p.data:
+                        import base64
+
+                        b64 = base64.b64encode(p.data).decode("ascii")
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{p.mime_type};base64,{b64}"
+                                },
+                            }
+                        )
+                    elif p.url:
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": p.url},
+                            }
+                        )
+            out["content"] = parts
+        else:
+            out["content"] = m.content
         if m.name:
             out["name"] = m.name
         if m.tool_calls:

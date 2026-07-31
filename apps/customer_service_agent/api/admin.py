@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update, func
 
+from common.config.config import settings
 from common.database.database import Base, HandoffTask, MessageRow, SessionRow
 from common.logger.logger import get_logger
 from knowledge_platform.knowledge_service.retriever.retriever import (
@@ -38,6 +39,25 @@ from knowledge_platform.knowledge_service.retriever.retriever import (
 
 router = APIRouter(prefix="/admin/api", tags=["admin"])
 log = get_logger(__name__)
+
+
+# ===== 共享 DB 引擎（避免每个请求创建/销毁连接池）=====
+
+_async_engine: Any = None
+_async_session_maker: Any = None
+
+
+def _get_db():
+    """获取共享的异步 DB session maker，惰性初始化。"""
+    global _async_engine, _async_session_maker
+    if _async_engine is None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        _async_engine = create_async_engine(settings.database_url, echo=False)
+        _async_session_maker = async_sessionmaker(
+            _async_engine, expire_on_commit=False
+        )
+    return _async_session_maker
 
 
 # ===== Pydantic 模型 =====
@@ -284,30 +304,16 @@ async def batch_ingest(item: KnowledgeBatchIngest) -> dict[str, Any]:
 # ===== 会话记录管理 =====
 
 
-async def _get_db_session():
-    """获取 SQLAlchemy 异步 session。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
-
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-    return engine, async_session
-
-
 @router.get("/sessions")
 async def list_sessions(
     platform: str = Query(default=""),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    """列出会话记录。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
+    """列出会话记录（使用 JOIN+GROUP BY 避免 N+1 查询）。"""
+    db_maker = _get_db()
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with async_session() as session:
+    async with db_maker() as session:
         query = select(SessionRow).order_by(SessionRow.created_at.desc())
         if platform:
             query = query.where(SessionRow.platform == platform)
@@ -324,27 +330,31 @@ async def list_sessions(
         result = await session.execute(query)
         rows = result.scalars().all()
 
-        items = []
-        for row in rows:
-            # 消息数
-            msg_count_result = await session.execute(
-                select(func.count()).select_from(MessageRow).where(MessageRow.session_id == row.id)
-            )
-            msg_count = msg_count_result.scalar() or 0
+        if not rows:
+            return {"items": [], "total": total, "limit": limit, "offset": offset}
 
-            items.append(
-                SessionOut(
-                    id=row.id,
-                    platform=row.platform,
-                    shop_id=row.shop_id,
-                    buyer_id=row.buyer_id,
-                    created_at=row.created_at,
-                    updated_at=row.updated_at,
-                    message_count=msg_count,
-                ).model_dump()
-            )
+        # 一次性获取所有会话的消息数（避免 N+1）
+        session_ids = [row.id for row in rows]
+        msg_count_query = (
+            select(MessageRow.session_id, func.count().label("cnt"))
+            .where(MessageRow.session_id.in_(session_ids))
+            .group_by(MessageRow.session_id)
+        )
+        msg_count_result = await session.execute(msg_count_query)
+        msg_counts = {row.session_id: row.cnt for row in msg_count_result}
 
-    await engine.dispose()
+        items = [
+            SessionOut(
+                id=row.id,
+                platform=row.platform,
+                shop_id=row.shop_id,
+                buyer_id=row.buyer_id,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                message_count=msg_counts.get(row.id, 0),
+            ).model_dump()
+            for row in rows
+        ]
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -352,13 +362,9 @@ async def list_sessions(
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str) -> dict[str, Any]:
     """获取会话详情（含所有消息）。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
+    db_maker = _get_db()
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with async_session() as session:
+    async with db_maker() as session:
         result = await session.execute(
             select(SessionRow).where(SessionRow.id == session_id)
         )
@@ -384,8 +390,6 @@ async def get_session(session_id: str) -> dict[str, Any]:
             for m in msgs
         ]
 
-    await engine.dispose()
-
     detail = SessionDetail(
         id=row.id,
         platform=row.platform,
@@ -403,19 +407,15 @@ async def get_session(session_id: str) -> dict[str, Any]:
 @router.post("/sessions")
 async def create_session(item: SessionCreate) -> dict[str, Any]:
     """录入历史会话记录。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
     from common.database.database import init_db
 
     # 确保表存在
     await init_db()
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
+    db_maker = _get_db()
     session_id = str(uuid4())
 
-    async with async_session() as session:
+    async with db_maker() as session:
         # 创建会话
         session_row = SessionRow(
             id=session_id,
@@ -441,8 +441,6 @@ async def create_session(item: SessionCreate) -> dict[str, Any]:
 
         await session.commit()
 
-    await engine.dispose()
-
     log.info("admin.session_created", session_id=session_id, messages=len(item.messages))
 
     return {"id": session_id, "message_count": len(item.messages)}
@@ -451,13 +449,9 @@ async def create_session(item: SessionCreate) -> dict[str, Any]:
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict[str, Any]:
     """删除会话及其所有消息。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
+    db_maker = _get_db()
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with async_session() as session:
+    async with db_maker() as session:
         result = await session.execute(
             select(SessionRow).where(SessionRow.id == session_id)
         )
@@ -471,8 +465,6 @@ async def delete_session(session_id: str) -> dict[str, Any]:
             delete(SessionRow).where(SessionRow.id == session_id)
         )
         await session.commit()
-
-    await engine.dispose()
 
     log.info("admin.session_deleted", session_id=session_id)
 
@@ -490,24 +482,18 @@ async def get_stats() -> dict[str, Any]:
     for col in COLLECTIONS:
         kb_stats[col] = store.count(col)
 
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from common.config.config import settings
-
-    engine = create_async_engine(settings.database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    db_maker = _get_db()
 
     session_count = 0
     message_count = 0
     try:
-        async with async_session() as session:
+        async with db_maker() as session:
             r1 = await session.execute(select(func.count()).select_from(SessionRow))
             session_count = r1.scalar() or 0
             r2 = await session.execute(select(func.count()).select_from(MessageRow))
             message_count = r2.scalar() or 0
     except Exception:
         pass  # 表可能尚未创建
-    finally:
-        await engine.dispose()
 
     return {
         "knowledge_base": kb_stats,

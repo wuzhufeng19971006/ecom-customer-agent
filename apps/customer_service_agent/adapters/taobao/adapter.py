@@ -49,7 +49,40 @@ class TaobaoAdapter(PlatformAdapter):
         return ""  # 返回平台消息 ID
 
     async def parse_incoming(self, payload: dict[str, Any]) -> IncomingMessage:
-        """解析千牛 webhook 回调 payload（结构按实际回调字段对齐）。"""
+        """解析千牛 webhook 回调 payload（结构按实际回调字段对齐）。
+
+        签名验证：如果配置了 app_secret，校验 payload 中的 sign 字段。
+        淘宝千牛推送签名算法为 HMAC-SHA256(app_secret, timestamp + body)。
+        """
+        if self.app_secret:
+            received_sign = str(payload.get("sign", ""))
+            if not received_sign:
+                from apps.customer_service_agent.adapters.doudian.adapter import (
+                    SignatureVerificationError,
+                )
+
+                raise SignatureVerificationError("missing sign in taobao payload")
+            # 验签：HMAC-SHA256(app_secret, timestamp + msg_id)
+            import hashlib
+            import hmac as _hmac
+
+            timestamp = str(payload.get("timestamp", ""))
+            msg_id = str(payload.get("msg_id", ""))
+            raw = f"{timestamp}{msg_id}"
+            expected = _hmac.new(
+                self.app_secret.encode("utf-8"),
+                raw.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            if not _hmac.compare_digest(expected, received_sign):
+                from apps.customer_service_agent.adapters.doudian.adapter import (
+                    SignatureVerificationError,
+                )
+
+                raise SignatureVerificationError(
+                    f"signature mismatch in taobao payload, msg_id={msg_id}"
+                )
+
         return IncomingMessage(
             platform="taobao",
             platform_msg_id=str(payload.get("msg_id", "")),

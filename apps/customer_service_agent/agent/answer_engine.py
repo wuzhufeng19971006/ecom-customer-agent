@@ -354,10 +354,12 @@ class AnswerEngine:
                     result = "工具执行器未初始化"
 
                 tool_calls_made.append(fn["name"])
+                # 工具返回结果脱敏后再存入 session，避免真实 PII 进入后续 LLM 上下文
+                masked_result = masker.mask_text(result).masked
                 session.append(
                     Message(
                         role="tool",
-                        content=result,
+                        content=masked_result,
                         tool_call_id=call["id"],
                         name=fn["name"],
                     )

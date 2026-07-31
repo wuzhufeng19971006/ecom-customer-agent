@@ -130,7 +130,7 @@ async def doudian_webhook(request: Request) -> JSONResponse:
 
 @router.post("/taobao")
 async def taobao_webhook(request: Request) -> JSONResponse:
-    """淘宝千牛消息推送回调（保留兼容）。"""
+    """淘宝千牛消息推送回调（保留兼容）。验签失败返回 403。"""
     payload: dict[str, Any] = await request.json()
 
     from apps.customer_service_agent.adapters.taobao.adapter import (
@@ -138,7 +138,14 @@ async def taobao_webhook(request: Request) -> JSONResponse:
     )
 
     adapter = get_taobao_adapter()
-    msg = await adapter.parse_incoming(payload)
+    try:
+        msg = await adapter.parse_incoming(payload)
+    except SignatureVerificationError as e:
+        log.warning("webhook.taobao.sign_rejected", error=str(e))
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": "signature verification failed"},
+        )
 
     result = await _handle_message(
         adapter=adapter,

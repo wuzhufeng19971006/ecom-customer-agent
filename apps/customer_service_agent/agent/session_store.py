@@ -134,6 +134,7 @@ class SessionStore:
                 select(SessionRow)
                 .where(SessionRow.buyer_id == buyer_id)
                 .where(SessionRow.platform == platform)
+                .where(SessionRow.shop_id == shop_id)
                 .order_by(SessionRow.updated_at.desc())
                 .limit(1)
             )
@@ -222,6 +223,8 @@ class SessionStore:
                 .values(updated_at=now)
             )
             await db.commit()
+            # 同步内存中的 updated_at，避免 TTL 检查使用过期值导致会话被误判过期
+            session.updated_at = now
 
     async def save_handoff(
         self,

@@ -514,7 +514,7 @@ async function saveKnowledge() {
     } else {
       await fetch(`${API}/knowledge`, {
         method: 'POST', headers: {'Content-Type':'application/json; charset=utf-8'},
-        body: JSON.stringify({question, answer, tags: tagsArr, collection})
+        body: JSON.stringify({question, answer, tags, collection})
       });
       toast('知识点已新增');
     }

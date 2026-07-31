@@ -43,7 +43,9 @@ class ChromaStore:
         )
         self._embedding_fn = get_embedding()
         self._collections = {
-            name: self._client.get_or_create_collection(name=name)
+            name: self._client.get_or_create_collection(
+                name=name, metadata={"hnsw:space": "cosine"}
+            )
             for name in COLLECTIONS
         }
 
@@ -57,10 +59,14 @@ class ChromaStore:
         if collection not in self._collections:
             raise ValueError(f"unknown collection: {collection}")
         embeddings = await self._embedding_fn.embed(documents, text_type="document")
+        # ChromaDB >=1.5 拒绝空 dict metadata（"Expected metadata to be a non-empty dict"），
+        # 空 dict 统一转 None（Chroma 合法值，表示无元数据）
+        if metadatas is not None:
+            metadatas = [m if m else None for m in metadatas]
         self._collections[collection].add(
             ids=ids,
             documents=documents,
-            metadatas=metadatas or [{} for _ in documents],
+            metadatas=metadatas,
             embeddings=embeddings,
         )
 
@@ -88,7 +94,7 @@ class ChromaStore:
                     id=doc_id,
                     text=result["documents"][0][i],
                     score=1.0 - result["distances"][0][i],  # Chroma 返回距离
-                    metadata=result["metadatas"][0][i],
+                    metadata=result["metadatas"][0][i] or {},
                 )
             )
         return hits

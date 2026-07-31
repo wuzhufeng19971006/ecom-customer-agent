@@ -91,8 +91,9 @@ class Masker:
         _replace(self._EMAIL_RE, self._mask_email)
         _replace(self._ID_CARD_RE, self._mask_id_card)
         _replace(self._PHONE_RE, self._mask_phone)
-        _replace(self._BANK_CARD_RE, self._mask_bank_card)
+        # 订单号（15-18位）优先于银行卡（16-19位），避免 16-18 位订单号被误识别为银行卡
         _replace(self._ORDER_ID_RE, self._mask_order_id)
+        _replace(self._BANK_CARD_RE, self._mask_bank_card)
         _replace(self._HOUSE_NO_RE, self._mask_house_number)
 
         return MaskResult(
