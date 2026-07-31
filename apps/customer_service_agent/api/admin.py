@@ -78,14 +78,18 @@ class KnowledgeCreate(BaseModel):
     collection: str = Field(default="kb_faq")
 
     def to_document(self) -> str:
-        """根据填充字段自动选择存储格式。"""
+        """根据填充字段自动选择存储格式。纯知识模式下标题为空时自动从内容推导。"""
         if self.question and self.answer:
             return f"Q: {self.question}\nA: {self.answer}"
-        text = self.title or ""
         body = self.content or self.answer or ""
-        if text and body:
-            return f"{text}\n{body}"
-        return text or body
+        if not body.strip():
+            return self.title or ""
+        text = self.title or ""
+        if not text:
+            # 标题为空时自动提取内容首行或前 50 字作为标题
+            first_line = body.split("\n")[0].strip()
+            text = first_line[:50] + ("..." if len(first_line) > 50 else "")
+        return f"{text}\n{body}"
 
     def primary_text(self) -> str:
         """返回主要文本（question 或 title），用于响应。"""

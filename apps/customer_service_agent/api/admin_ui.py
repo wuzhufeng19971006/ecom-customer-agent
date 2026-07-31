@@ -563,9 +563,14 @@ async function saveKnowledge() {
     body.question = question;
     body.answer = answer;
   } else {
-    const title = document.getElementById('kb-modal-title').value.trim();
+    let title = document.getElementById('kb-modal-title').value.trim();
     const content = document.getElementById('kb-modal-content').value.trim();
-    if (!title || !content) { toast('标题和内容不能为空', 'error'); return; }
+    if (!content) { toast('内容不能为空', 'error'); return; }
+    // 标题为空时自动提取内容首行或前 50 字作为标题
+    if (!title) {
+      const firstLine = content.split('\n')[0].trim();
+      title = firstLine.length > 50 ? firstLine.substring(0, 50) + '...' : firstLine;
+    }
     body.title = title;
     body.content = content;
   }
